@@ -1,4 +1,4 @@
-﻿from django.db import migrations, models
+from django.db import migrations, models
 import django.db.models.deletion
 
 
@@ -86,7 +86,7 @@ class Migration(migrations.Migration):
                 ("start_date", models.DateField()),
                 ("end_date", models.DateField()),
                 ("half_day", models.BooleanField(default=False)),
-                ("half", models.CharField(blank=True, choices=[("first", "First Half"), ("second", "Second Half")], max_length=10)),
+                ("half", models.CharField(blank=True, null=True, choices=[("first", "First Half"), ("second", "Second Half")], max_length=10)),
                 ("station_leave", models.BooleanField(default=False)),
                 ("station_start", models.DateField(blank=True, null=True)),
                 ("station_end", models.DateField(blank=True, null=True)),

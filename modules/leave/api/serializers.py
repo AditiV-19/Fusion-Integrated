@@ -125,19 +125,27 @@ class LeaveApplicationCreateSerializer(serializers.ModelSerializer):
                 "Half-day leave must have the same start and end date."
             )
 
-        # Check balance (best-effort; authoritative check happens in service layer)
+        # BR-EL-014: Substitute eligibility (cannot nominate oneself)
+        substitute_user_id = attrs.get("substitute_user_id")
         request = self.context.get("request")
-        if request and hasattr(request.user, "user_id"):
+        current_user_id = getattr(request.user, "user_id", None) if request and hasattr(request, "user") else None
+        if substitute_user_id and current_user_id and substitute_user_id == current_user_id:
+            raise serializers.ValidationError(
+                {"substitute_user_id": "An applicant cannot nominate themselves as substitute."}
+            )
+
+        # Check balance (best-effort; authoritative check happens in service layer)
+        if request and current_user_id:
             from modules.leave.models import LeaveBalance
             import datetime
             year = str(start.year) if start else str(datetime.date.today().year)
             try:
                 balance = LeaveBalance.objects.get(
-                    user_id=request.user.user_id,
+                    user_id=current_user_id,
                     category=cat,
                     year=year,
                 )
-                required = count_leave_days(start, end, half_day=half)
+                required = count_leave_days(start, end, category=cat, half_day=half)
                 if balance.balance_days < required:
                     raise serializers.ValidationError(
                         f"Insufficient balance: available {balance.balance_days}d, "

@@ -1,23 +1,6 @@
 from django.db import models
 from decimal import Decimal
-# from core.db.mixins import TimeStampedModel, UserScopedModel
-# Using local stubs so the file works even without core installed
-from django.db import models as _m
-
-
-class TimeStampedModel(models.Model):
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        abstract = True
-
-
-class UserScopedModel(TimeStampedModel):
-    created_by_user_id = models.IntegerField(null=True, blank=True)
-
-    class Meta:
-        abstract = True
+from core.db.mixins import TimeStampedModel
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +58,7 @@ class HalfDayChoice(models.TextChoices):
 # Models
 # ---------------------------------------------------------------------------
 
-class LeavePolicy(UserScopedModel):
+class LeavePolicy(TimeStampedModel):
     year_label    = models.CharField(max_length=20, unique=True)
     cl_days       = models.PositiveSmallIntegerField(default=8)
     rh_days       = models.PositiveSmallIntegerField(default=2)
@@ -92,7 +75,7 @@ class LeavePolicy(UserScopedModel):
         return f"LeavePolicy({self.year_label})"
 
 
-class HolidayCalendar(UserScopedModel):
+class HolidayCalendar(TimeStampedModel):
     date         = models.DateField()
     kind         = models.CharField(max_length=30, choices=HolidayKind.choices, default=HolidayKind.HOLIDAY)
     name         = models.CharField(max_length=200)
@@ -106,7 +89,7 @@ class HolidayCalendar(UserScopedModel):
         return f"{self.name} ({self.date})"
 
 
-class LeaveBalance(UserScopedModel):
+class LeaveBalance(TimeStampedModel):
     user_id      = models.IntegerField(db_index=True)
     category     = models.CharField(max_length=10, choices=LeaveCategory.choices)
     balance_days = models.DecimalField(max_digits=6, decimal_places=1, default=Decimal("0.0"))
@@ -117,10 +100,10 @@ class LeaveBalance(UserScopedModel):
         unique_together = [("user_id", "category", "year")]
 
     def __str__(self):
-        return f"Balance({self.user_id}, {self.category}, {self.balance_days}d, {self.year})"
+        return f"u{self.user_id} {self.category}: {self.balance_days} ({self.year})"
 
 
-class LeaveApplication(UserScopedModel):
+class LeaveApplication(TimeStampedModel):
     user_id                = models.IntegerField(db_index=True)
     category               = models.CharField(max_length=10, choices=LeaveCategory.choices)
     start_date             = models.DateField()
@@ -153,6 +136,11 @@ class LeaveApplication(UserScopedModel):
     class Meta:
         db_table = "leave_application"
         ordering = ["-submitted_at"]
+
+    @property
+    def days_requested(self) -> Decimal:
+        from modules.leave.domain.rules import count_leave_days
+        return count_leave_days(self.start_date, self.end_date, half_day=self.half_day)
 
     def __str__(self):
         return f"LeaveApp({self.user_id}, {self.category}, {self.start_date}~{self.end_date}, {self.status})"

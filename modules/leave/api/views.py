@@ -83,17 +83,66 @@ class LeaveApplicationListCreateView(APIView):
 
         validated = serializer.validated_data
         category  = validated["category"]
+        start_date = validated["start_date"]
+        end_date = validated["end_date"]
+        half_day = validated.get("half_day", False)
+        half = validated.get("half")
 
-        # Determine initial status based on whether substitute is required
-        if requires_substitute(category) and validated.get("substitute_user_id"):
+        # BR-EL-012: Check applicant non-overlap with active pending or approved leave
+        active_statuses = [
+            ApplicationStatus.PENDING,
+            ApplicationStatus.AWAITING_SUBSTITUTE,
+            ApplicationStatus.UNIT_HEAD_REVIEW,
+            ApplicationStatus.PROCESSING,
+            ApplicationStatus.SANCTIONED,
+            ApplicationStatus.EXTENSION_PENDING,
+        ]
+        overlap_qs = LeaveApplication.objects.filter(
+            user_id=user_id,
+            status__in=active_statuses,
+            start_date__lte=end_date,
+            end_date__gte=start_date,
+        )
+        for existing in overlap_qs:
+            # Different half-day CL on the same date is allowed
+            if (
+                half_day
+                and existing.half_day
+                and start_date == end_date == existing.start_date == existing.end_date
+                and half
+                and existing.half
+                and half != existing.half
+            ):
+                continue
+            return Response(
+                {"detail": "Leave dates impermissibly overlap an existing pending or approved leave."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # BR-EL-020: Director self-sanction path
+        user_roles = getattr(request.user, "roles", []) if hasattr(request, "user") else []
+        is_director = "director" in user_roles
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+        if is_director:
+            initial_status = ApplicationStatus.SANCTIONED
+            decided_at = now
+            decided_by = user_id
+        elif requires_substitute(category) and validated.get("substitute_user_id"):
             initial_status = ApplicationStatus.AWAITING_SUBSTITUTE
+            decided_at = None
+            decided_by = None
         else:
             initial_status = ApplicationStatus.PENDING
+            decided_at = None
+            decided_by = None
 
         application = LeaveApplication.objects.create(
             user_id=user_id,
             status=initial_status,
-            submitted_at=datetime.datetime.now(datetime.timezone.utc),
+            submitted_at=now,
+            decided_at=decided_at,
+            decided_by_user_id=decided_by,
             **validated,
         )
 
@@ -104,15 +153,19 @@ class LeaveApplicationListCreateView(APIView):
                 nominee_user_id=validated["substitute_user_id"],
             )
 
-        # Create first approval step
-        scope = get_unit_head_scope(category)
-        ApprovalStep.objects.create(
-            application=application,
-            step_order=1,
-            authority_role="unit_head",
-        )
+        # Create first approval step (if not self-sanctioned)
+        if not is_director:
+            scope = get_unit_head_scope(category)
+            ApprovalStep.objects.create(
+                application=application,
+                step_order=1,
+                authority_role="unit_head",
+            )
 
         return Response(
+            LeaveApplicationDetailSerializer(application).data,
+            status=status.HTTP_201_CREATED,
+        )
             LeaveApplicationDetailSerializer(application).data,
             status=status.HTTP_201_CREATED,
         )
@@ -345,10 +398,11 @@ class UnitHeadDecideView(APIView):
                 application.decided_at     = now
                 application.decided_by_user_id = user_id
         else:
-            # Unit head can only recommend; forward to admin/registrar
-            if decision in [ApprovalDecision.RECOMMENDED, ApprovalDecision.APPROVED]:
+            # BR-EL-017: Unit Head records Recommended or Not Recommended.
+            # Not Recommended is not a final rejection; both outcomes continue through higher-sanction path.
+            if decision in [ApprovalDecision.RECOMMENDED, ApprovalDecision.NOT_RECOMMENDED, ApprovalDecision.APPROVED]:
                 application.status = ApplicationStatus.PROCESSING
-            elif decision in [ApprovalDecision.NOT_RECOMMENDED, ApprovalDecision.REJECTED]:
+            elif decision == ApprovalDecision.REJECTED:
                 application.status = ApplicationStatus.REJECTED
                 application.decided_at         = now
                 application.decided_by_user_id = user_id
